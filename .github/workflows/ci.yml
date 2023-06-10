@@ -1,0 +1,97 @@
+name: Mirasol CI
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-20.04
+    strategy:
+      matrix:
+        go: [ '1.19' ]
+    timeout-minutes: 5
+    steps:
+    - uses: actions/checkout@v3
+    - uses: actions/setup-go@v3
+      with:
+        go-version: ${{ matrix.go }}
+
+    - name: Check formatting
+      run: go fmt
+
+    - name: Vet
+      run: go vet
+
+    - uses: golangci/golangci-lint-action@v3
+      with:
+        version: latest
+        skip-cache: true
+        args: --timeout=5m # add --issues-exit-code=0 if you want lint to pass on errors
+
+  build:
+    name: Build and Test
+    runs-on: ubuntu-20.04
+    needs: Lint
+
+    strategy:
+      matrix:
+        go: [ '1.19' ]
+    
+    timeout-minutes: 5
+    
+    steps:
+    - uses: actions/checkout@v3
+    - uses: actions/setup-go@v3
+      with:
+        go-version: ${{ matrix.go }}
+        cache: true
+
+    - name: Install systemd lib dependencies
+      run: |
+        sudo apt update
+        sudo apt install -o Acquire::Retries=10 libsystemd-dev
+
+    - name: Build
+      run: go build -v ./...
+
+    - name: Allow non-interactive tests to use systemd D-Bus API polkit >=106
+      uses: "DamianReeves/write-file-action@master"
+      with:
+        path: /usr/share/polkit-1/rules.d/99-mirasol-ci.rules
+        write-mode: overwrite
+        contents: |
+          // Allow any user to manage units.
+          // Fall back to implicit authorization otherwise.
+          polkit.addRule(function(action, subject) {
+              if (action.id == "org.freedesktop.systemd1.manage-units") ||
+              (action.id == "org.freedesktop.systemd1.manage-unit-files") {
+                  return polkit.Result.YES;
+              }
+          });
+
+    - name: Allow non-interactive tests to use systemd D-Bus API polkit <106
+      run: |
+        gid=`id -gn`
+        cat << EOF | sudo tee /etc/polkit-1/localauthority/50-local.d/mirasol-ci.pkla
+        [CI Permissions]
+        Identity=unix-group:$gid
+        Action=org.freedesktop.systemd1.*
+        ResultAny=yes
+        ResultInactive=yes
+        ResultActive=yes
+        EOF
+
+    - name: Unit tests
+      run: go test -run Test_Unit_ -race -shuffle=on -v ./...
+
+    # End-to-end tests must run sequentially so they don't compete for
+    # fixtures, such as when (un)installing systemd unit files.
+    - name: E2E tests
+      run: go test -run Test_E2E_ -shuffle=on -v ./...
