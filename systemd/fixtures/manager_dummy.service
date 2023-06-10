@@ -1,0 +1,5 @@
+[Unit]
+Description=dummy unit for Mirasol e2e tests
+
+[Service]
+ExecStart=/bin/sleep 400

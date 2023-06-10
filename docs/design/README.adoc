@@ -1,0 +1,89 @@
+ifdef::env-github[]
+:tip-caption: :bulb:
+:note-caption: :information_source:
+:important-caption: :heavy_exclamation_mark:
+:caution-caption: :fire:
+:warning-caption: :warning:
+endif::[]
+
+:toc:
+:toc-placement!:
+
+== Mirasol design
+
+toc::[]
+
+=== Goals
+
+* *Long-lived app*
+* Understands if:
+** Node *is lagging behind* the cluster
+** Node process *Crash-looping*
+** Node is *hung*, e.g. RPC port is simply not listening or Pubsub subscription
+receives no data over a certain period of time
+* *Restarts* the node process(es) when needed
+* *Reports RPC latency* and other events through OpenTelemetry, eg
+increase counter for unexpected restarts (crashloop evidence)
+* Provides pure HTTP/1 `/healthz` endpoint, in order to:
+** being deterministic about whether the node is dead or restarting - we can't
+infer this by calling `getHealth` JSON-RPC and having the connection refused
+** what data is returned back, such as how many heavy RPCs are being handled by
+the underlying node - this enables _smarter_ load-balancing
+
+=== Non-goals
+
+* Cache RPCs
+
+=== Design
+
+==== Considerations
+
+* Manage the lifecycle of the Solana RPC node through systemd D-Bus API
+* **DOES NOT** run as `root` - here is an example of
+https://github.com/systemd/systemd/commit/88ced61bf9673407f4b15bf51b1b408fd78c149d[how
+to give a certain user enough permissions to manage systemd units]
+* Run per Solana node, in order to avoid:
+** exposing systemd D-Bus outside of localhost;
+** introduce more complexity to guarantee watchdog HA.
+* Understand it is expected for the RPC port to not be bound (listening)
+during bootstrap of the node
+
+
+==== Diagrams
+
+The *main loop* takes care of tracking whether the node is
+healthy, and restart if it is not.
+
+.Mirasol main execution loop
+image::mirasol_main.svg[Mirasol main execution loop]
+
+The *healthz endpoint* is a pure HTTP/1 endpoint that returns:
+
+* HTTP 200 OK if node is *healthy*, or
+* HTTP 503 Unavailable - plus JSON body with description of what’s wrong
+-, otherwise.
+
+This endpoint is orthogonal to Solana’s `getHealth` JSON-RPC, in the
+sense that this endpoint is chain-agnostic and can be served when the RPC port
+is not listening.
+
+.Mirasol healthz endpoint loop
+image::mirasol_healthz.svg[Mirasol healthz endpoint execution loop]
+
+The *proxy* fronts the Solana’s node JSON-RPC and
+Websockets APIs entirely. This happens so that we're able to:
+
+* Record latency between request and respective response, so that,
+for instance, we can identify heavy RPCs;
+* Record client activity for understanding clearly who misbehaves;
+* Provide more control over what `getHealth` RPC returns, eg for
+_smarter_ load-balancing purposes. Do note that when a node is catching
+up, the JSON-RPC port is not yet available. By _replacing_ it with
+Mirasol, we can keep this RPC available and return richer information on
+why the Solana node may be unhealthy, eg _this node is handling the
+maximum configured number of heavy RPCs._
+
+.Mirasol proxy execution loop
+image::mirasol_proxy.svg[mirasol_proxy.svg]
+
+=== Open Questions
