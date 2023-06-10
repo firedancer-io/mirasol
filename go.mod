@@ -3,7 +3,7 @@ module github.com/jumpcrypto/mirasol
 go 1.19
 
 require (
-	github.com/cenkalti/backoff/v4 v4.2.0
+	github.com/cenkalti/backoff/v4 v4.2.1
 	github.com/coreos/go-systemd/v22 v22.5.0
 	// solana-go with goroutine leaks fixed.
 	// TODO(pires) adopt a release when a newer than 1.8.2 is cut.
